@@ -1,0 +1,535 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RuView — Radar 3D en Vivo</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { height:100%; background:#070b16; color:#e8eef7; font-family:-apple-system,'Segoe UI',Roboto,sans-serif; overflow:hidden; }
+  #scene { position:fixed; inset:0; }
+  .panel { position:fixed; background:rgba(11,17,33,.86); backdrop-filter:blur(10px);
+    border:1px solid rgba(90,120,180,.22); border-radius:14px; padding:13px 15px; box-shadow:0 8px 30px rgba(0,0,0,.35); }
+  #status { top:14px; left:14px; min-width:235px; }
+  #status h1 { font-size:15px; margin-bottom:9px; display:flex; align-items:center; gap:8px; letter-spacing:.3px; }
+  #dot { width:11px; height:11px; border-radius:50%; background:#ff4757; box-shadow:0 0 10px #ff4757; transition:.3s; }
+  #dot.live { background:#2ed573; box-shadow:0 0 12px #2ed573; animation:pulse 1.6s infinite; }
+  @keyframes pulse { 50% { opacity:.45; } }
+  .stat { display:flex; justify-content:space-between; gap:18px; font-size:13px; padding:3px 0; color:#9fb0c9; }
+  .stat b { color:#fff; font-variant-numeric:tabular-nums; }
+  #rooms { top:14px; right:14px; width:262px; }
+  .room { border-left:3px solid #2ed573; padding:8px 10px; margin-bottom:8px; background:rgba(255,255,255,.03); border-radius:0 8px 8px 0; }
+  .room.occ { border-left-color:#ff4757; }
+  .room .rt { font-size:13px; font-weight:600; display:flex; justify-content:space-between; align-items:center; }
+  .room .rb { font-size:12px; color:#8c9ab3; margin-top:3px; }
+  .badge { font-size:11px; padding:2px 8px; border-radius:10px; background:#2ed57333; color:#2ed573; }
+  .badge.busy { background:#ff475733; color:#ff6b81; }
+  /* sensor bars */
+  #sensors { top:200px; right:14px; width:262px; }
+  #sensors h3, #vitals h3 { font-size:12px; color:#7fd5ff; margin-bottom:8px; letter-spacing:.5px; text-transform:uppercase; }
+  .sbar { margin-bottom:9px; }
+  .sbar .lab { display:flex; justify-content:space-between; font-size:12px; color:#a9b6cc; margin-bottom:3px; }
+  .sbar .track { height:7px; background:#16203a; border-radius:4px; overflow:hidden; }
+  .sbar .fill { height:100%; width:0%; border-radius:4px; transition:width .25s; background:linear-gradient(90deg,#22d3ee,#7CFC00,#ffd166,#ff3b52); }
+  .sbar.stale .lab { color:#ff6b81; }
+  /* vitals */
+  #vitals { bottom:14px; right:14px; width:262px; }
+  #vwave { width:100%; height:70px; display:block; background:#0a1020; border-radius:8px; margin-top:4px; }
+  .vrow { display:flex; justify-content:space-between; font-size:12px; color:#a9b6cc; margin-top:6px; }
+  .vrow b { color:#fff; }
+  /* layers */
+  #layers { bottom:14px; right:50%; transform:translateX(50%); display:flex; gap:6px; }
+  .tg { font-size:12px; padding:6px 11px; border-radius:18px; cursor:pointer; user-select:none;
+    background:#16203a; color:#9fb0c9; border:1px solid transparent; transition:.2s; }
+  .tg.on { background:#1d3a5c; color:#cfeaff; border-color:#3a6ea5; }
+  #legend { bottom:60px; left:14px; font-size:12px; color:#9fb0c9; }
+  .lrow { display:flex; align-items:center; gap:7px; margin:3px 0; }
+  .sw { width:13px; height:13px; border-radius:50%; }
+  #dbg { top:14px; left:50%; transform:translateX(-50%); font-size:12px; color:#7fd5ff; white-space:nowrap; }
+  #hint { position:fixed; bottom:64px; left:50%; transform:translateX(-50%); font-size:11px; color:#5e6b83; }
+  #banner { top:50%; left:50%; transform:translate(-50%,-50%); text-align:center; max-width:430px; display:none; }
+  #banner h2 { color:#ff6b81; margin-bottom:8px; } #banner p { color:#a9b6cc; font-size:13px; line-height:1.6; }
+  code { background:#1a2336; padding:1px 5px; border-radius:4px; color:#7fd5ff; }
+</style>
+</head>
+<body>
+<div id="scene"></div>
+
+<div id="status" class="panel">
+  <h1><span id="dot"></span> RuView — Radar 3D</h1>
+  <div class="stat"><span>Estado</span><b id="s-conn">conectando…</b></div>
+  <div class="stat"><span>Fuente</span><b id="s-src">—</b></div>
+  <div class="stat"><span>Sensores activos</span><b id="s-nodes">0</b></div>
+  <div class="stat"><span>Personas</span><b id="s-persons">0</b></div>
+  <div class="stat"><span>Calidad señal</span><b id="s-qual">—</b></div>
+  <div class="stat"><span>Frames/s</span><b id="s-fps">0</b></div>
+</div>
+
+<div id="rooms" class="panel"></div>
+
+<div id="sensors" class="panel">
+  <h3>Sensores · contribución</h3>
+  <div id="sbars"></div>
+</div>
+
+<div id="vitals" class="panel">
+  <h3>Signos vitales</h3>
+  <canvas id="vwave" width="240" height="70"></canvas>
+  <div class="vrow"><span>Respiración</span><b id="v-br">— rpm</b></div>
+  <div class="vrow"><span>Pulso</span><b id="v-hr">— bpm</b></div>
+</div>
+
+<div id="legend" class="panel">
+  <div class="lrow"><span class="sw" style="background:#ff3b52"></span>Persona detectada</div>
+  <div class="lrow"><span class="sw" style="background:#2ed573"></span>Sensor activo</div>
+  <div class="lrow"><span class="sw" style="background:#22d3ee"></span>Sensor sin señal</div>
+</div>
+
+<div id="layers" class="panel">
+  <span class="tg on" data-layer="field">Campo señal</span>
+  <span class="tg on" data-layer="trail">Rastro</span>
+  <span class="tg on" data-layer="beam">Haz</span>
+  <span class="tg on" data-layer="grid">Rejilla</span>
+  <span class="tg" data-layer="rotate">Auto-girar</span>
+</div>
+
+<div id="dbg" class="panel"></div>
+<div id="hint">Arrastra para rotar · Rueda para zoom · Click dcho para mover</div>
+
+<div id="banner" class="panel">
+  <h2>Esperando datos del sensor…</h2>
+  <p>Comprueba que los ESP32 están encendidos y el servidor corriendo.
+  Probando <code id="b-url"></code>.</p>
+</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+}}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ════════════════════════════════════════════════════════════════════════════
+//  DIMENSIONES (metros)
+// ════════════════════════════════════════════════════════════════════════════
+const ROOM_W = 4.0, ROOM_D = 7.0, ROOM_H = 3.0, GRID = 20;
+const HOLD_MS = 7000, MOTION_ON = 0.15;
+const SENSORS = {
+  1: { x: 0.4,          y: 1.4, z: 0.4 },
+  2: { x: ROOM_W - 0.4, y: 1.4, z: ROOM_D - 0.4 },
+};
+const SENSOR_IDS = [1, 2];
+const tileW = ROOM_W / GRID, tileD = ROOM_D / GRID;
+
+// layer flags
+const LAYERS = { field:true, trail:true, beam:true, grid:true, rotate:false };
+
+// ── WebSocket ─────────────────────────────────────────────────────────────
+const HOST = location.hostname || 'localhost';
+const forced = new URLSearchParams(location.search).get('ws');
+const WS_PORTS = forced ? [Number(forced)] : [3001, 8765, 3000];
+let wsPortIdx = 0, gotAnyMsg = false, ws;
+const wsUrl = () => `ws://${HOST}:${WS_PORTS[wsPortIdx]}/ws/sensing`;
+document.getElementById('b-url').textContent = WS_PORTS.map(p=>':'+p).join(' / ');
+
+// ── Three.js ──────────────────────────────────────────────────────────────
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x070b16);
+scene.fog = new THREE.FogExp2(0x070b16, 0.035);
+
+const camera = new THREE.PerspectiveCamera(55, innerWidth/innerHeight, 0.1, 200);
+camera.position.set(ROOM_W*1.4, ROOM_H*2.0, ROOM_D*1.25);
+
+const renderer = new THREE.WebGLRenderer({ antialias:true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+document.getElementById('scene').appendChild(renderer.domElement);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.target.set(ROOM_W/2, ROOM_H*0.35, ROOM_D/2);
+controls.autoRotateSpeed = 0.8;
+
+scene.add(new THREE.AmbientLight(0x6688cc, 0.7));
+const key = new THREE.DirectionalLight(0xffffff, 0.85); key.position.set(ROOM_W+4, ROOM_H+8, ROOM_D+2); scene.add(key);
+const rim = new THREE.PointLight(0x3aa0ff, 0.6, 40); rim.position.set(ROOM_W/2, ROOM_H+2, ROOM_D/2); scene.add(rim);
+
+const groundGrid = new THREE.GridHelper(46, 46, 0x223047, 0x131d33);
+groundGrid.position.y = -0.01; scene.add(groundGrid);
+
+// room box
+const boxGeo = new THREE.BoxGeometry(ROOM_W, ROOM_H, ROOM_D);
+const wallMat = new THREE.LineBasicMaterial({ color:0x3a5a8c });
+const wallLines = new THREE.LineSegments(new THREE.EdgesGeometry(boxGeo), wallMat);
+wallLines.position.set(ROOM_W/2, ROOM_H/2, ROOM_D/2); scene.add(wallLines);
+const wallBoxMat = new THREE.MeshBasicMaterial({ color:0x14223e, transparent:true, opacity:0.07, side:THREE.DoubleSide });
+const wallBox = new THREE.Mesh(boxGeo, wallBoxMat); wallBox.position.copy(wallLines.position); scene.add(wallBox);
+
+// ── Color ramp ──────────────────────────────────────────────────────────────
+function rampArr(t){
+  t = Math.max(0,Math.min(1,t));
+  const st=[[10,42,94],[34,211,238],[124,252,0],[255,209,102],[255,59,82]];
+  const seg=t*(st.length-1), i=Math.floor(seg), f=seg-i;
+  const a=st[i], b=st[Math.min(i+1,st.length-1)];
+  return [(a[0]+(b[0]-a[0])*f)/255,(a[1]+(b[1]-a[1])*f)/255,(a[2]+(b[2]-a[2])*f)/255];
+}
+
+// ── Volumetric signal field (InstancedMesh of bars) ──────────────────────────
+const fieldCount = GRID*GRID;
+const fieldGeo = new THREE.BoxGeometry(tileW*0.82, 1, tileD*0.82);
+const fieldMat = new THREE.MeshStandardMaterial({ transparent:true, opacity:0.9, roughness:0.5, metalness:0.1 });
+const fieldMesh = new THREE.InstancedMesh(fieldGeo, fieldMat, fieldCount);
+fieldMesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(fieldCount*3), 3);
+scene.add(fieldMesh);
+const dummy = new THREE.Object3D();
+let fieldValues = new Array(fieldCount).fill(0);
+const fieldDisp = new Array(fieldCount).fill(0); // displayed (smoothed)
+function layoutField(){
+  for (let r=0;r<GRID;r++) for (let c=0;c<GRID;c++){
+    const i = r*GRID+c;
+    const h = Math.max(0.02, fieldDisp[i]*ROOM_H*0.9);
+    dummy.position.set(tileW*(c+0.5), h/2, tileD*(r+0.5));
+    dummy.scale.set(1, h, 1);
+    dummy.updateMatrix();
+    fieldMesh.setMatrixAt(i, dummy.matrix);
+    const col = rampArr(fieldDisp[i]);
+    fieldMesh.setColorAt(i, new THREE.Color(col[0],col[1],col[2]));
+  }
+  fieldMesh.instanceMatrix.needsUpdate = true;
+  if (fieldMesh.instanceColor) fieldMesh.instanceColor.needsUpdate = true;
+}
+layoutField();
+
+// ── Sensor towers ────────────────────────────────────────────────────────────
+const sensorViz = {};
+for (const [nid,pos] of Object.entries(SENSORS)){
+  const g = new THREE.Group();
+  const pillar = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.05,0.05,pos.y,12),
+    new THREE.MeshStandardMaterial({ color:0x1a2f4a }));
+  pillar.position.set(pos.x, pos.y/2, pos.z); g.add(pillar);
+  const head = new THREE.Mesh(
+    new THREE.SphereGeometry(0.14,18,18),
+    new THREE.MeshStandardMaterial({ color:0x22d3ee, emissive:0x22d3ee, emissiveIntensity:0.5 }));
+  head.position.set(pos.x, pos.y, pos.z); g.add(head);
+  const ring = new THREE.Mesh(
+    new THREE.RingGeometry(0.2,0.26,32),
+    new THREE.MeshBasicMaterial({ color:0x22d3ee, transparent:true, opacity:0.5, side:THREE.DoubleSide }));
+  ring.rotation.x = -Math.PI/2; ring.position.set(pos.x, 0.03, pos.z); g.add(ring);
+  // label ESP N
+  const lc = document.createElement('canvas'); lc.width=128; lc.height=48;
+  const lx = lc.getContext('2d'); lx.font='bold 28px sans-serif'; lx.fillStyle='#bdf0ff';
+  lx.textAlign='center'; lx.fillText(`ESP ${nid}`, 64, 34);
+  const lt = new THREE.CanvasTexture(lc);
+  const ls = new THREE.Sprite(new THREE.SpriteMaterial({ map:lt, transparent:true }));
+  ls.scale.set(0.7,0.25,1); ls.position.set(pos.x, pos.y+0.3, pos.z); g.add(ls);
+  scene.add(g);
+  sensorViz[nid] = { head, ring };
+}
+
+// ── Person spheres + trail ─────────────────────────────────────────────────
+const personSpheres = [];
+function makeSphere(idx){
+  const s = new THREE.Mesh(
+    new THREE.SphereGeometry(0.26, 28, 28),
+    new THREE.MeshStandardMaterial({ color:0xff3b52, emissive:0xff1133, emissiveIntensity:0.6, roughness:0.35 }));
+  const halo = new THREE.Mesh(
+    new THREE.SphereGeometry(0.46, 22, 22),
+    new THREE.MeshBasicMaterial({ color:0xff3b52, transparent:true, opacity:0.16 }));
+  s.add(halo);
+  const beam = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.06,0.18, ROOM_H, 12, 1, true),
+    new THREE.MeshBasicMaterial({ color:0xff3b52, transparent:true, opacity:0.12, side:THREE.DoubleSide }));
+  beam.position.y = ROOM_H/2 - 1.0; s.add(beam);
+  s.userData.beam = beam;
+  // label "Persona N"
+  const canvas = document.createElement('canvas'); canvas.width=256; canvas.height=64;
+  const c = canvas.getContext('2d');
+  c.font='bold 36px sans-serif'; c.fillStyle='#ffffff'; c.textAlign='center';
+  c.fillText(`Persona ${idx+1}`, 128, 42);
+  const tex = new THREE.CanvasTexture(canvas);
+  const label = new THREE.Sprite(new THREE.SpriteMaterial({ map:tex, transparent:true, opacity:0.9 }));
+  label.scale.set(1.2, 0.3, 1); label.position.y = 0.55;
+  s.add(label);
+  scene.add(s);
+  return s;
+}
+function ensureSpheres(n){
+  while (personSpheres.length < n) personSpheres.push(makeSphere(personSpheres.length));
+  for (let i=0;i<personSpheres.length;i++) personSpheres[i].visible = i<n;
+}
+
+// motion trail for primary person
+const TRAIL_N = 80;
+const trailPos = new Float32Array(TRAIL_N*3);
+const trailGeo = new THREE.BufferGeometry();
+trailGeo.setAttribute('position', new THREE.BufferAttribute(trailPos,3));
+const trailMat = new THREE.LineBasicMaterial({ color:0xff3b52, transparent:true, opacity:0.5 });
+const trailLine = new THREE.Line(trailGeo, trailMat); scene.add(trailLine);
+let trailHead = 0, trailFilled = 0;
+function pushTrail(x,y,z){
+  trailPos[trailHead*3]=x; trailPos[trailHead*3+1]=y; trailPos[trailHead*3+2]=z;
+  trailHead=(trailHead+1)%TRAIL_N; trailFilled=Math.min(trailFilled+1,TRAIL_N);
+  // rebuild ordered positions
+  const ordered = new Float32Array(TRAIL_N*3);
+  for (let k=0;k<trailFilled;k++){ const idx=(trailHead-trailFilled+k+TRAIL_N)%TRAIL_N;
+    ordered[k*3]=trailPos[idx*3]; ordered[k*3+1]=trailPos[idx*3+1]; ordered[k*3+2]=trailPos[idx*3+2]; }
+  trailGeo.setAttribute('position', new THREE.BufferAttribute(ordered,3));
+  trailGeo.setDrawRange(0, trailFilled);
+  trailGeo.attributes.position.needsUpdate = true;
+}
+
+// ── Hotspots ──────────────────────────────────────────────────────────────
+function hotspots(values, n){
+  const cells=[];
+  for(let r=0;r<GRID;r++)for(let c=0;c<GRID;c++)cells.push({r,c,v:values[r*GRID+c]??0});
+  cells.sort((a,b)=>b.v-a.v);
+  const picked=[];
+  for(const cell of cells){ if(picked.length>=n)break;
+    if(picked.every(p=>Math.abs(p.r-cell.r)+Math.abs(p.c-cell.c)>3))picked.push(cell); }
+  return picked.map(p=>({ x:tileW*(p.c+0.5), y:1.0, z:tileD*(p.r+0.5) }));
+}
+
+// ── Localization ──────────────────────────────────────────────────────────
+let trackPos = { x:ROOM_W/2, z:ROOM_D/2 };
+const TRACK_EMA = 0.15, NODE_EMA = 0.2;
+const nodeSmooth = {};  // node_id -> {v,m,s,lastSeen}
+const STALE_MS = 5000;  // un sensor se considera inactivo si su dato es más viejo que esto
+function nodeIsFresh(id){
+  const h = nodeSmooth[id];
+  return h && !h.stale && h.lastSeenMs < STALE_MS;
+}
+function localizeTarget(){
+  const nf = latest?.node_features || [];
+  nf.forEach(f=>{
+    if(!nodeSmooth[f.node_id]) nodeSmooth[f.node_id]={v:0,m:0,s:0,excess:0,active:false,lastSeenMs:9e9,stale:true};
+    const h=nodeSmooth[f.node_id];
+    h.lastSeenMs = f.last_seen_ms ?? 9e9;
+    h.stale = !!f.stale;
+    h.active = !!f.active;
+    // Solo actualizar señal de sensores FRESCOS (los stale conservan su último valor)
+    if (h.lastSeenMs < STALE_MS && !h.stale){
+      h.v += ((f.features?.variance||0)-h.v)*NODE_EMA;
+      h.m += ((f.features?.motion_band_power||0)-h.m)*NODE_EMA;
+      h.s += ((f.features?.spectral_power||0)-h.s)*NODE_EMA;
+      h.excess += ((f.excess||0)-h.excess)*NODE_EMA;
+    } else {
+      h.excess += (0-h.excess)*NODE_EMA;  // decae cuando el sensor enmudece
+    }
+  });
+  const ids = SENSOR_IDS.filter(id=>SENSORS[id] && nodeIsFresh(id));
+  if (ids.length<1) return null;
+  // Peso por EXCESO de actividad: la persona perturba MÁS el enlace del sensor
+  // más cercano → más peso a ese sensor (peso directo, no inverso).
+  const w = ids.map(id=> Math.max(0.0001, nodeSmooth[id].excess));
+  const tot = w.reduce((a,b)=>a+b,0);
+  if (tot <= 0.0005) return null;  // nadie se mueve de forma apreciable
+  const ratios = w.map(v=>v/tot);
+  const C = { x:ROOM_W/2, z:ROOM_D/2 };
+  let wx=0, wz=0; ids.forEach((id,i)=>{ wx+=SENSORS[id].x*ratios[i]; wz+=SENSORS[id].z*ratios[i]; });
+  // Extrapolar desde el centro: si la perturbación viene casi toda de un
+  // sensor, el punto se proyecta más allá de él (incluso fuera de la sala).
+  const OUT = 1.7;
+  const x = C.x + (wx - C.x) * OUT;
+  const z = C.z + (wz - C.z) * OUT;
+  document.getElementById('dbg').innerHTML = ids.map((id,i)=>{
+    const h=nodeSmooth[id];
+    return `<b>ESP${id}</b> exc:${h.excess.toFixed(2)} → <b>${(ratios[i]*100).toFixed(0)}%</b>`;
+  }).join(' &nbsp;|&nbsp; ');
+  return { x, z, ratios, ids };
+}
+
+// Pinta el campo de señal coherente con la posición detectada (incl. fuera).
+function paintField(dets){
+  for(let i=0;i<fieldCount;i++) fieldValues[i]=0.03;
+  for(const d of dets){
+    const cc = Math.max(0,Math.min(GRID-1, Math.floor(d.x/tileW)));
+    const rr = Math.max(0,Math.min(GRID-1, Math.floor(d.z/tileD)));
+    for(let r=0;r<GRID;r++) for(let c=0;c<GRID;c++){
+      const dist=(r-rr)*(r-rr)+(c-cc)*(c-cc);
+      fieldValues[r*GRID+c]=Math.min(1, fieldValues[r*GRID+c]+Math.exp(-dist/6)*0.9);
+    }
+  }
+}
+
+// ── State ────────────────────────────────────────────────────────────────
+let latest=null, frames=0, lastFpsT=performance.now(), lastData=0;
+let lastMotionTime=0, occupied=false, stPersons=0, stMotion=0, stVit={};
+let brRate=0, hrRate=0;
+
+function connect(){
+  document.getElementById('s-conn').textContent=`probando ${WS_PORTS[wsPortIdx]}…`;
+  ws=new WebSocket(wsUrl());
+  ws.onopen=()=>{ document.getElementById('dot').classList.add('live');
+    document.getElementById('s-conn').textContent=`conectado :${WS_PORTS[wsPortIdx]}`; };
+  ws.onclose=()=>{ document.getElementById('dot').classList.remove('live');
+    if(!gotAnyMsg&&WS_PORTS.length>1)wsPortIdx=(wsPortIdx+1)%WS_PORTS.length;
+    document.getElementById('s-conn').textContent='reconectando…'; setTimeout(connect,1200); };
+  ws.onerror=()=>{ document.getElementById('s-conn').textContent='error — ¿servidor activo?'; };
+  ws.onmessage=(e)=>{ gotAnyMsg=true; try{ ingest(JSON.parse(e.data)); }catch(_){} };
+}
+
+function ingest(d){
+  if (d && d.source) document.getElementById('s-src').textContent = d.source;
+  if (!d || (!d.signal_field && d.type!=='sensing_update')) return;
+  latest=d; lastData=performance.now(); frames++;
+  document.getElementById('banner').style.display='none';
+
+  // motion / presence
+  stMotion = Math.min(1,(d.features?.motion_band_power||0)/1.0);
+  stVit = d.vital_signs || {};
+  brRate = stVit.breathing_rate_bpm || 0;
+  hrRate = stVit.heart_rate_bpm || 0;
+
+  // Localización (también refresca el estado stale/fresco/activo de cada sensor)
+  const tgt = localizeTarget();
+
+  const anyActive = SENSOR_IDS.some(id=>nodeSmooth[id] && nodeSmooth[id].active && nodeIsFresh(id));
+  const moving = anyActive || !!(d.classification?.presence) || stMotion>MOTION_ON;
+  if (moving) lastMotionTime = performance.now();
+  occupied = (performance.now()-lastMotionTime) < HOLD_MS;
+  stPersons = occupied ? 1 : 0;   // 2 sensores → 1 objetivo localizable (honesto)
+
+  // sensores activos = frescos según last_seen_ms del propio nodo
+  const totalN = SENSOR_IDS.length;
+  let activeN = 0;
+  for (const id of SENSOR_IDS) if (nodeIsFresh(id)) activeN++;
+
+  document.getElementById('s-nodes').textContent = `${activeN}/${totalN}`;
+  document.getElementById('s-persons').textContent = stPersons;
+  const q = stVit.signal_quality ?? d.signal_quality_score;
+  document.getElementById('s-qual').textContent = q!=null ? `${Math.max(0,Math.min(100,q*100))|0}%` : '—';
+
+  // walls
+  wallMat.color.set(occupied?0xff4757:0x2ed573);
+  wallBoxMat.color.set(occupied?0x3a1020:0x14223e);
+
+  // bodies — un único objetivo real, ubicado por actividad (puede salir del cubo)
+  const n = Math.min(stPersons, 10);
+  ensureSpheres(n);
+  if (n>0 && tgt){ trackPos.x+=(tgt.x-trackPos.x)*TRACK_EMA; trackPos.z+=(tgt.z-trackPos.z)*TRACK_EMA; }
+  paintField(occupied && tgt ? [tgt] : []);
+
+  updateSensorBars(tgt);
+  renderSidebar();
+}
+
+function updateSensorBars(tgt){
+  const el = document.getElementById('sbars');
+  let html='';
+  for (const id of SENSOR_IDS){
+    const fresh = nodeIsFresh(id);
+    const pct = (tgt && tgt.ids.includes(id)) ? (tgt.ratios[tgt.ids.indexOf(id)]*100) : 0;
+    html += `<div class="sbar ${fresh?'':'stale'}">
+      <div class="lab"><span>ESP32 #${id} ${fresh?'':'⚠ sin señal'}</span><span>${fresh?pct.toFixed(0)+'%':'—'}</span></div>
+      <div class="track"><div class="fill" style="width:${fresh?pct:0}%"></div></div></div>`;
+    if (sensorViz[id]){
+      const sv = sensorViz[id];
+      sv.head.material.color.set(fresh ? 0x2ed573 : 0x22d3ee);
+      sv.head.material.emissive.set(fresh ? 0x2ed573 : 0x22d3ee);
+      sv.head.material.emissiveIntensity = fresh ? 0.5+pct/120 : 0.15;
+      sv.ring.material.color.set(fresh ? 0x2ed573 : 0x22d3ee);
+    }
+  }
+  el.innerHTML = html;
+}
+
+function renderSidebar(){
+  const el=document.getElementById('rooms'); el.innerHTML='';
+  const card=document.createElement('div'); card.className='room'+(occupied?' occ':'');
+  card.innerHTML=`
+    <div class="rt">Habitación 101
+      <span class="badge ${occupied?'busy':''}">${occupied?'OCUPADA':'LIBRE'}</span></div>
+    <div class="rb">Personas: <b>${stPersons}</b> · Movimiento: ${(stMotion*100|0)}%</div>`;
+  el.appendChild(card);
+  document.getElementById('v-br').textContent = brRate?brRate.toFixed(0)+' rpm':'— rpm';
+  document.getElementById('v-hr').textContent = hrRate?hrRate.toFixed(0)+' bpm':'— bpm';
+}
+
+// ── Vital sign waveform ─────────────────────────────────────────────────────
+const vcv=document.getElementById('vwave'), vctx=vcv.getContext('2d');
+let brPhase=0, hrPhase=0;
+function drawVitals(dt){
+  vctx.clearRect(0,0,vcv.width,vcv.height);
+  brPhase += dt*(brRate/60)*2*Math.PI;
+  hrPhase += dt*(hrRate/60)*2*Math.PI;
+  // breathing (smooth sine, cyan)
+  vctx.strokeStyle='#22d3ee'; vctx.lineWidth=2; vctx.beginPath();
+  for(let x=0;x<vcv.width;x++){ const ph=brPhase - x*0.05;
+    const y=35 - Math.sin(ph)*(brRate?16:2);
+    x===0?vctx.moveTo(x,y):vctx.lineTo(x,y); }
+  vctx.stroke();
+  // heartbeat (sharp pulse, red)
+  vctx.strokeStyle='#ff3b52'; vctx.lineWidth=2; vctx.beginPath();
+  for(let x=0;x<vcv.width;x++){ const ph=(hrPhase - x*0.05)%(2*Math.PI);
+    let y=58; const p=ph<0?ph+2*Math.PI:ph;
+    if(p<0.3) y=58-Math.sin(p/0.3*Math.PI)*(hrRate?14:1);
+    x===0?vctx.moveTo(x,y):vctx.lineTo(x,y); }
+  vctx.stroke();
+}
+
+// ── Layer toggles ──────────────────────────────────────────────────────────
+document.querySelectorAll('.tg').forEach(t=>{
+  t.onclick=()=>{ const L=t.dataset.layer; LAYERS[L]=!LAYERS[L]; t.classList.toggle('on',LAYERS[L]);
+    if(L==='grid') groundGrid.visible=LAYERS.grid;
+    if(L==='field') fieldMesh.visible=LAYERS.field;
+    if(L==='trail') trailLine.visible=LAYERS.trail;
+    if(L==='rotate') controls.autoRotate=LAYERS.rotate;
+  };
+});
+
+// ── Render loop ──────────────────────────────────────────────────────────
+let lastT=performance.now();
+function animate(){
+  requestAnimationFrame(animate);
+  const t=performance.now(), dt=Math.min(0.05,(t-lastT)/1000); lastT=t;
+
+  // smooth field display + layout
+  for(let i=0;i<fieldCount;i++) fieldDisp[i]+=(fieldValues[i]-fieldDisp[i])*0.15;
+  if (LAYERS.field) layoutField();
+
+  // breathing pulse scale on primary sphere
+  const breathScale = 1 + (brRate?0.09:0.04)*Math.sin(t/1000*(brRate?brRate/60*2*Math.PI:2));
+  personSpheres.forEach((s,i)=>{
+    if(!s.visible) return;
+    s.position.y = 1.0 + 0.1*Math.sin(t/350+i);
+    if(i===0) s.scale.setScalar(breathScale);
+    s.userData.beam.visible = LAYERS.beam;
+  });
+  // primary tracked position + trail (límites generosos: permite salir del cubo)
+  if (personSpheres[0]?.visible){
+    const cx=Math.max(-2,Math.min(ROOM_W+2,trackPos.x));
+    const cz=Math.max(-2,Math.min(ROOM_D+2,trackPos.z));
+    personSpheres[0].position.x = cx; personSpheres[0].position.z = cz;
+    if (LAYERS.trail && (t|0)%2===0) pushTrail(cx, personSpheres[0].position.y, cz);
+  }
+
+  // sensor ring pulse
+  for (const id of SENSOR_IDS){ const sv=sensorViz[id]; if(!sv)continue;
+    const sc=1+0.25*Math.sin(t/500); sv.ring.scale.setScalar(sc); }
+
+  // hysteresis re-eval
+  const wasOcc=occupied; occupied=(t-lastMotionTime)<HOLD_MS;
+  if (wasOcc&&!occupied){ stPersons=0; ensureSpheres(0);
+    wallMat.color.set(0x2ed573); wallBoxMat.color.set(0x14223e);
+    trailFilled=0; trailGeo.setDrawRange(0,0); renderSidebar(); }
+
+  drawVitals(dt);
+
+  if (t-lastFpsT>1000){ document.getElementById('s-fps').textContent=frames; frames=0; lastFpsT=t; }
+  if (t-lastData>4000) document.getElementById('banner').style.display='block';
+
+  controls.update();
+  renderer.render(scene,camera);
+}
+animate();
+connect();
+
+addEventListener('resize',()=>{ camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth,innerHeight); });
+</script>
+</body>
+</html>

@@ -1,0 +1,71 @@
+[package]
+name = "wifi-densepose-sensing-server"
+version.workspace = true
+edition.workspace = true
+description = "Lightweight Axum server for WiFi sensing UI with RuVector signal processing"
+license.workspace = true
+authors = ["rUv <ruv@ruv.net>", "WiFi-DensePose Contributors"]
+repository.workspace = true
+documentation = "https://docs.rs/wifi-densepose-sensing-server"
+keywords = ["wifi", "sensing", "server", "websocket", "csi"]
+categories = ["web-programming::http-server", "science"]
+readme = "README.md"
+
+[lib]
+name = "wifi_densepose_sensing_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "sensing-server"
+path = "src/main.rs"
+
+[dependencies]
+# Web framework
+axum = { workspace = true }
+tower-http = { version = "0.6", features = ["fs", "cors", "set-header"] }
+tokio = { workspace = true, features = ["full", "process"] }
+futures-util = "0.3"
+ruvector-mincut = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json.workspace = true
+
+# Logging
+tracing.workspace = true
+tracing-subscriber = { workspace = true }
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# CLI
+clap = { workspace = true }
+
+# Multi-BSSID WiFi scanning pipeline (ADR-022 Phase 3)
+wifi-densepose-wifiscan = { version = "0.3.0", path = "../wifi-densepose-wifiscan" }
+
+# Signal processing with RuvSense pose tracker (accuracy sprint).
+# default-features = false drops the optional ndarray-linalg/BLAS chain so that
+# `--no-default-features` at the workspace root can produce a Windows-friendly
+# build without vcpkg/openblas (issue #366, #415).
+wifi-densepose-signal = { version = "0.3.0", path = "../wifi-densepose-signal", default-features = false }
+
+# midstream — real-time introspection / low-latency tap (ADR-099 D1).
+# Two crates only, on purpose: scheduler / neural-solver / strange-loop are
+# explicitly out of scope of ADR-099 (D5).
+midstreamer-temporal-compare = "0.2"   # DTW / LCS / Edit-Distance pattern matching
+midstreamer-attractor        = "0.2"   # Lyapunov + regime classification
+
+# ADR-102: Edge Module Registry — fetch the canonical Cognitum cog catalog
+# at `https://storage.googleapis.com/cognitum-apps/app-registry.json`,
+# cache with TTL, surface via /api/v1/edge/registry. ureq is the smallest
+# blocking HTTP client we can use without dragging a tokio HTTP stack in;
+# rustls is enabled implicitly via the `tls` default feature.
+ureq      = { version = "2", default-features = false, features = ["tls", "json"] }
+sha2      = "0.10"
+thiserror = "1"
+
+[dev-dependencies]
+tempfile = "3.10"
+# `tower::ServiceExt::oneshot` for in-process Router tests (bearer_auth).
+tower = { workspace = true }
